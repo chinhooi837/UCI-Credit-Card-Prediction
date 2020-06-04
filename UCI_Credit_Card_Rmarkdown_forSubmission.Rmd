@@ -1,0 +1,854 @@
+---
+title: "Defaults of Credit Card in Taiwan"
+author: "Chin Hooi Yap"
+output:   
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    latex_engine: xelatex
+  pandoc_args: [
+      "+RTS", "-K512m",
+      "-RTS"
+    ]
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+#run the following line in console if tinytex is not installed
+#tinytex::install_tinytex() 
+chooseCRANmirror(graphics=FALSE, ind=1)
+knitr::opts_chunk$set(dev='pdf', echo = TRUE)
+knitr::opts_chunk$set(message = FALSE, warning=FALSE)
+```
+
+\pagebreak
+
+# Overview  
+
+
+This Project is part of the "Choose Your Own Project" for PH125.9x, HarvardX Professional Certificate in Data Science program on edX. I have chosen this data set as I am interested in data set related to financial industry. The objective is to build a classification model to predict the defaults of Credit Card customers in Taiwan based on the data provided. I will be using the tools and methods learned throughout the course and also part of my learning from my work experience. 
+
+## Introduction  
+
+
+Prediction of default of credit card customers is a good practical example of supervise learning to predict the likelihood of default for each customer so that the financial institution can take actions with a risk based approach on customers who are more likely to default. As for this project, we will use the data set provided on Kaggle. 
+
+Kaggle Link: [Default of Credit Card Clients Dataset ](https://www.kaggle.com/uciml/default-of-credit-card-clients-dataset/download)
+
+
+
+Firstly, we will start by reading and doing a quick exploration on the data. We will then perform exploratory data analysis to better understand the data. After that, we will perform pre-processing and feature engineering to prepare the data for modeling.
+
+Subsequently, we will train a few machine learning algorithms using the processed data and use the split test set to validate the performance. Lastly, we will optimize the performance and compare the performances of different algorithms to select the model with the best performance. 
+
+
+We will output the following files at the end of this project:
+
+1. A report in PDF format (by publishing this RMD file as pdf).
+
+2. This report in RMD file.
+
+3. A detailed R script.
+
+4. Various models files that I used to do the prediction because it takes a very long time to retrain the models. They are uploaded to Github. 
+
+
+## Objective of Project  
+
+
+This project aims to train a machine learning algorithm to predict the probability of default of credit card clients in Taiwan given the information such as Demographics, Payment status, Bill Amount and etc. 
+
+The evaluation metric that we will be using is AUC-ROC (AUC), the area under curve for Receiver Operating Characteristic (ROC) curve, which is one of the most widely used evaluation metrics for classification problems in machine learning. AUC-ROC of a classifier is equal to the probability that the classifier will rank a randomly chosen positive example higher than a randomly chosen negative example. 
+ROC is essentially the plot of True Positive Rate (TPR) and False Positive Rate (FPR), which can be thought of as a benefit vs cost plot. AUC-ROC has a range of [0, 1]. The greater the value, the better is the performance of our model.
+
+
+Refer to [Classification metrics](https://towardsdatascience.com/metrics-to-evaluate-your-machine-learning-algorithm-f10ba6e38234) for more details. 
+
+
+We will experiment a few models and select the model that has the best AUC-ROC (i.e. highest AUC-ROC).
+
+
+# Obtaining the Data    
+
+```{r loading require package, eval=TRUE,echo=FALSE, message=FALSE, include=FALSE}
+#install required package if they are not already installed
+#loaded all packages
+Modeling_packages <- c("caret", "randomForest","xgboost","MASS","arm","stats", "pROC","ROCR","ranger")
+Plot_packages <- c("ggplot2", "e1071","VIM","corrplot", "reshape2", "grid","vcd","gridExtra","gridBase","Hmisc","GGally")
+Processing_packages <- c("dplyr", "tidyverse","lubridate")
+Import_packages <- c("readr", "stringr")
+
+required_packages = c(Modeling_packages, Plot_packages, Processing_packages,Import_packages)
+#find out the packages needed that are not installed and install them
+new.packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+#load packages
+lapply(required_packages, require, character.only = TRUE)
+
+```
+
+
+We will download the credit card data using the code as follows.
+The csv file is pre-downloaded from kaggle to make the process smoother. 
+```{r loading downloaded data, message=FALSE, warning=FALSE, eval=TRUE, paged.print=FALSE, echo=TRUE}
+UCI_Credit_Card <- read_csv("UCI_Credit_Card.csv",col_names = TRUE)
+UCI_Credit_Card<-data.frame(UCI_Credit_Card)
+
+```
+
+# Method and Analysis  
+
+## Data Exploration  
+
+We will start off by checking the data structure and the columns. 
+```{r data structure and columns, echo=TRUE, warning=FALSE}
+str(UCI_Credit_Card)
+```
+
+Next, we check on the missing values. We can see that there is no missing values in the data set.
+```{r missing values, echo=TRUE, warning=FALSE}
+colSums(sapply(UCI_Credit_Card, is.na))
+```
+
+We also check whether this is an imbalance data set, in this case, it refers to the number of 1s in the target variable default.payment.next.month. There are 22% of labels with 1, which tells us that the data set is slightly imbalanced. 
+```{r imbalance dataset, echo=TRUE, warning=FALSE}
+sum(UCI_Credit_Card$default.payment.next.month)/nrow(UCI_Credit_Card)
+```
+
+
+Besides that, we are removing the ID columns as it is not meaningful to our analysis.
+```{r remove ID columns, echo=TRUE, warning=FALSE}
+UCI_Credit_Card <- UCI_Credit_Card%>%select(-ID)
+```
+
+
+
+## Pre-processing and Exploratory Data Analysis  
+
+Next, we will now proceed to exploratory data analysis. We will start by plotting a few visualizations to gain more insights of the data. Do note that before we plot certain graphs, we will be doing some simple pre-processing to improve the readability of the visualizations. 
+Besides, values that are not listed in the data dictionary are put to "Unknown" for Education and Marriage.
+
+```{r function-datatype-raw, echo=FALSE, warning=FALSE}
+convert_to_factor <- function(df, lst){
+  for (i in lst){
+    df[[i]] <- as.factor(df[[i]])
+  }
+  return(df)
+}
+
+convert.to.numeric <- function(df, lst){
+  for (i in lst){
+    df[[i]] <- as.numeric(df[[i]])
+  }
+  return(df)
+}
+```
+
+
+
+```{r function-massconvert, echo=FALSE, warning=FALSE}
+#create a function to convert all the relevant columns into factor to increase reusability.
+mass_convert_to_factor<-function(UCI_Credit_Card){
+  
+  # Convert Sex Data (1,2) with (Male, Female)
+  UCI_Credit_Card$SEX <- as.factor(UCI_Credit_Card$SEX)
+  levels(UCI_Credit_Card$SEX) <- c("Male","Female")
+  
+  #Grouping the 0, 5, 6 as unknown are they are not listed in the data dictionary
+  # Convert Education Level Data (0,1,2,3,4,5,6) with (Unknown, Graduate school, University, High school, Others, Unknown, Unknown)
+  UCI_Credit_Card$EDUCATION <- as.factor(UCI_Credit_Card$EDUCATION)
+  levels(UCI_Credit_Card$EDUCATION) <- c("Unknown", "Graduate School", "University", "High school", "Others", "Unknown", "Unknown")
+  
+  
+  # Putting the 0  as unknown are they are not listed in the data dictionary
+  # Convert Marriage level Data (0,1,2,3) with (Unknown, Married, Single, Others)
+  UCI_Credit_Card$MARRIAGE <- as.factor(UCI_Credit_Card$MARRIAGE)
+  levels(UCI_Credit_Card$MARRIAGE) <- c("Unknown" , "Married" , "Single" ,"Others")
+  
+  
+  # Convert default.payment.next.month level Data (0,1) with (No, Yes)
+  UCI_Credit_Card$default.payment.next.month <- as.factor(UCI_Credit_Card$default.payment.next.month)
+  #levels(UCI_Credit_Card$default.payment.next.month) <- c("No" , "Yes")
+  
+  # Convert Repayment Status columns to Factors
+  
+  list_to_factor <- c("PAY_0", "PAY_2", "PAY_3", "PAY_4","PAY_5","PAY_6")
+  UCI_Credit_Card <- convert_to_factor(UCI_Credit_Card, list_to_factor)
+  
+  return(UCI_Credit_Card)
+  
+}
+
+UCI_Credit_Card<-mass_convert_to_factor(UCI_Credit_Card)
+colnames(UCI_Credit_Card)[colnames((UCI_Credit_Card)) == "default.payment.next.month"] = "target" 
+
+```
+
+The following plots show that there is not much relationship between Sex, Education and Marriage to Default.Payment.Next.Month (target).    
+We can see that the default payments is distributed almost evenly across genders, Marital Status and Education Level.  
+
+
+```{r visualization1, echo=TRUE, warning=FALSE, fig.height=5, fig.width=6}
+
+graph1<-UCI_Credit_Card%>%ggplot(aes(x=SEX,fill = target))+ geom_bar()+
+  labs(title = "Distribution by Sex", x ="Sex",fill = "target") +
+  theme(axis.text.x = element_text(angle = 45,hjust=1))
+
+graph2<-UCI_Credit_Card%>%ggplot(aes(x=EDUCATION,fill = target))+ geom_bar()+
+  labs(title = "Distribution by Education", x ="Education Level",fill = "target") +
+  theme(axis.text.x = element_text(angle = 45,hjust=1))
+
+graph3<-UCI_Credit_Card%>%ggplot(aes(x=MARRIAGE,fill = target))+ geom_bar()+
+  labs(title = "Distribution by Marital Status", x ="Marital Status",fill = "target") +
+  theme(axis.text.x = element_text(angle = 45,hjust=1))
+
+grid.arrange(graph1,graph2,graph3,ncol=2)
+
+```
+
+Next, we will study the distribution of Age to default payments. We can also see that the distribution of default group is similar to that of the non-default group. Hence, it shows that there is no direct relationship between Age and Default payment.  
+
+
+```{r visualization_age, echo=TRUE, warning=FALSE, fig.height=3, fig.width=6}
+
+UCI_Credit_Card%>% ggplot(aes(x=AGE,fill = target))+
+  geom_histogram(bins=30, color = "black")+
+  scale_x_continuous(breaks = seq(min(0), max(90), by = 5), na.value = TRUE)+
+labs(title = "Distribution by Age", x ="Age", y ="Count")
+
+
+```
+
+We will now study the relationship between limit balance and default payment. The graph shown that the ratio of default clients to the non-default is about the same and distribution is similar. 
+
+
+```{r visualization_limitbal, echo=TRUE, warning=FALSE, fig.height=3, fig.width=6}
+
+ggplot(aes(x = UCI_Credit_Card$LIMIT_BAL/1000), data = UCI_Credit_Card) +
+  geom_histogram(aes(fill = UCI_Credit_Card$target),col="black") +
+  labs(title = "Distribution of Limit Balance", x ="Limit Balance x 1000", 
+       y ="Count",fill = "target")+
+  xlim(c(0,750))
+
+
+```
+
+Next, we will make a correlation plot to study the correlation between features.
+
+```{r reload data for cor, message=FALSE, warning=FALSE, eval=TRUE, paged.print=FALSE, echo=TRUE}
+#reload data without preprocessing to ensure that they are numeric for correlation plot
+UCI_Credit_Card_cor <- read_csv("UCI_Credit_Card.csv",col_names = TRUE)
+UCI_Credit_Card_cor<-data.frame(UCI_Credit_Card_cor)%>%select(-ID)
+
+```
+
+We can see that both Payment status and Bill amount are highly correlated to each other, this is understandable as the bill amount are cumulated if it is not paid off. It is also interesting to note that our target variable (default.payment.next.month) is somewhat correlated to payment status (PAY_0 to PAY_6)
+
+```{r visualization_COR1, echo=TRUE, warning=FALSE, fig.height=6, fig.width=6}
+#rename default.payment.next.month to "target" to improve the readibility
+colnames(UCI_Credit_Card_cor)[colnames((UCI_Credit_Card_cor)) == "default.payment.next.month"] = "target"   
+M <- cor(subset(UCI_Credit_Card_cor, select = colnames(UCI_Credit_Card_cor)))
+corrplot(M, method="number")
+
+
+```
+
+
+
+## Feature Engineering
+
+We will now perform feature engineering to create more useful features for our models.
+To fully utilize the features provided in the data set, the following new features have been generated,
+
+  + Payamt_minus_Billamt  - to calculate the difference between Payment amount (rowsum) and Bill amount (rowsum) to obtain the outstanding debt.
+  + Limit_Utilisation  - to calculate the ratio of Bill amount (rowsum) to the credit balance.
+
+
+```{r feature_eng, echo=TRUE, eval=TRUE, warning=FALSE}
+#creating intermediate columns Billamt_rowsum and Payamt_rowsum to generate the features 
+UCI_Credit_Card$Billamt_rowsum<-rowSums(UCI_Credit_Card[grep("BILL_AMT", names(UCI_Credit_Card))])
+UCI_Credit_Card$Payamt_rowsum<-rowSums(UCI_Credit_Card[grep("PAY_AMT", names(UCI_Credit_Card))])
+
+#new features
+UCI_Credit_Card$Limit_Utilisation<-UCI_Credit_Card$Billamt_rowsum/(UCI_Credit_Card$LIMIT_BAL*6)
+UCI_Credit_Card$Payamt_minus_Billamt<-UCI_Credit_Card$Billamt_rowsum-UCI_Credit_Card$Payamt_rowsum
+
+#remove intermediate columns before next step modeling
+UCI_Credit_Card<-UCI_Credit_Card%>%select(-Payamt_rowsum,-Billamt_rowsum)
+```
+
+Besides, we also perform a sanity check on the correlation of the new features with the others. 
+It can be seen that Limit Utilitsation does have certain correlation with target. 
+
+```{r feature_eng_cor_visual, echo=FALSE, eval=TRUE, warning=FALSE, fig.height=6, fig.width=6}
+
+#used the previous UCI_Credit_Card_cor data to ensure that they are numeric for correlation plot 
+UCI_Credit_Card_cor$Billamt_rowsum<-rowSums(UCI_Credit_Card_cor[grep("BILL_AMT", names(UCI_Credit_Card_cor))])
+UCI_Credit_Card_cor$Payamt_rowsum<-rowSums(UCI_Credit_Card_cor[grep("PAY_AMT", names(UCI_Credit_Card_cor))])
+UCI_Credit_Card_cor$Limit_Utilisation<-UCI_Credit_Card_cor$Billamt_rowsum/(UCI_Credit_Card_cor$LIMIT_BAL*6)
+UCI_Credit_Card_cor$Payamt_minus_Billamt<-UCI_Credit_Card_cor$Billamt_rowsum-UCI_Credit_Card_cor$Payamt_rowsum
+
+#remove intermediate columns before next step modeling
+UCI_Credit_Card_cor<-UCI_Credit_Card_cor%>%select(-Payamt_rowsum,-Billamt_rowsum)
+
+
+#Correlation plot
+M <- cor(subset(UCI_Credit_Card_cor, select = colnames(UCI_Credit_Card_cor)))
+corrplot(M, method="number")  
+
+```
+
+A density plot below further demonstrated the relationship between the Limit Utilisation with the target.
+The profile of Limit Utilisation for both groups are similar for Limit Utilisation <0.25 but clients with Limit Utilisation>0.5 seems to have higher tendency to default. 
+
+```{r feature_eng_cor_visual2, echo=FALSE, eval=TRUE, warning=FALSE, fig.height=3, fig.width=5}
+UCI_Credit_Card_cor$target<-as.factor(UCI_Credit_Card_cor$target)
+
+UCI_Credit_Card_cor%>% ggplot(aes(x=Limit_Utilisation,fill=target))+
+  geom_density(alpha=0.5)+
+  labs(title = "Distribution of Limit_Utilisation", x ="Limit_Utilisation",fill = "target")+
+  xlim(0,2)
+
+
+```
+
+## Modelling  
+
+### Modelling techniques  
+
+
+To train a good model, we will need to go through the following steps:
+
+1. Pre-processing - pre-process the data to ensure a clean and consistent data frame are input to the model
+2. Feature Engineering - Adding more useful features and do experiments to validate the performance.
+3. Feature Selection - Select the top features input to the models and remove the remaining to reduce the noise to the model.
+4. Hyperparameters tuning - Tune the hyperparameters of the respective models to ensure that our models are optimized.
+
+In this project, we have selected Logistic Regression, Random Forest and XGBoost as our algorithms to study. These three models are known to be very powerful for classification problem in supervised machine learning. 
+We will proceed to train three mentioned algorithms with their default parameters to obtain their respective baseline model.
+
+
+
+
+```{r caret split, echo=FALSE, eval=TRUE, warning=FALSE}
+#test train split
+set.seed(1)    
+library(caret)
+set.seed(1)
+UCI_Credit_Card<-data.frame(UCI_Credit_Card)
+trainIndex <- createDataPartition(y=UCI_Credit_Card$target, p=0.8, list=FALSE,times = 1)
+test1Train <- UCI_Credit_Card[trainIndex,]
+test1Test <- UCI_Credit_Card[-trainIndex,]
+y_train_first<-test1Train$target
+X_train_first<-test1Train%>%select(-target)
+y_test_first<-test1Test$target
+X_test_first<-test1Test%>%select(-target)
+
+```
+
+
+### Baseline Model - Logistic Regression
+
+Let us start off by training a Logistic Regression model with the default parameters to obtain a baseline model.
+
+```{r glm1_baseline, echo=TRUE,eval=TRUE,warning=FALSE}
+glm1 <- glm(y_train_first ~ ., data=X_train_first, family=binomial)
+```
+
+Subsequently, we will validate the performance by calculating various metrics such as confusion matrix (using threshold of 0.5), best accuracy, AUC by using the previously split test data.
+
+```{r glm1_perf, echo=TRUE,eval=TRUE,warning=FALSE}
+#To solve the PAY_2 and PAY_5 have new levels 8 error (due to splitting)
+glm1$xlevels[["PAY_2"]] <- union(glm1$xlevels[["PAY_2"]], levels(X_test_first$PAY_2))
+glm1$xlevels[["PAY_5"]] <- union(glm1$xlevels[["PAY_5"]], levels(X_test_first$PAY_5))
+
+#prediction with model
+glm1_pred<-predict(glm1, X_test_first, type="response")
+glm_ROCRpred <- prediction(glm1_pred, y_test_first)
+
+#confusion matrix
+# use caret and compute a confusion matrix
+pred_0.5_glm1 <- as.factor(as.numeric(glm1_pred>0.5))
+cm_glm1<-confusionMatrix(data = pred_0.5_glm1, reference = y_test_first,positive='1')
+
+#AUC curve and accuracy
+glm1_perf <- performance(glm_ROCRpred, "tpr", "fpr")
+glm1_perf_auc <- performance(glm_ROCRpred, measure = "auc")
+glm1_perf_acc <- performance(glm_ROCRpred, measure = "acc")
+glm1_auc<-glm1_perf_auc@y.values[[1]]
+
+# Get best accuracy and cutoff
+ind <- which.max( slot(glm1_perf_acc, "y.values")[[1]] )
+glm1_acc <- slot(glm1_perf_acc, "y.values")[[1]][ind]
+glm1_cutoff <- slot(glm1_perf_acc, "x.values")[[1]][ind]
+
+Model_performance <- data.frame(Model= "Logistic Regression Baseline Model",
+                                Best_Accuracy=glm1_acc,
+                                #Cut_off=glm1_cutoff,
+                                AUC=glm1_perf_auc@y.values[[1]],
+                                Sensitivity=cm_glm1$byClass['Sensitivity'],
+                                Specificity=cm_glm1$byClass['Specificity']
+)
+```
+
+
+It can be seen that Logistic Regression's AUC performance is 0.465, not a very good model considering it is worse than random guessing (AUC=0.5).
+```{r Model_performance_glm, echo=TRUE,eval=TRUE}
+Model_performance %>% knitr::kable()
+```
+
+### Baseline Model - Random Forest  
+
+
+Next we will be training Random Forest baseline model.
+
+```{r rf1_baseline, eval=FALSE,echo=TRUE}
+rf1 <- randomForest(y_train_first~.,data=X_train_first, importance=T,
+                           ntree=500, keep.forest=T)
+```
+
+```{r rf1_baseline_read, eval=TRUE,echo=FALSE}
+rf1<- readRDS("rf1.rds")
+```
+
+Obtaining the various performance metrics by using the previously split test data. 
+```{r rf1_perf, eval=TRUE,echo=TRUE}
+#predict with test data, obtain the probability
+rf1_prob <- predict(rf1, X_test_first, type='prob')[,2]
+pred_0.5_rf1 <- as.factor(as.numeric(rf1_prob>0.5))
+
+#COnfusion matrix
+cm_rf1<-confusionMatrix(pred_0.5_rf1, y_test_first, positive='1')
+
+#AUC and accuracy
+rf1_ROCRpred <- prediction(rf1_prob,y_test_first)
+rf1_perf <- performance(rf1_ROCRpred,"tpr","fpr")
+rf1_perf_auc <- performance(rf1_ROCRpred, measure = "auc")
+rf1_perf_acc <- performance(rf1_ROCRpred, measure = "acc")
+
+# Get best accuracy and cutoff
+ind <- which.max( slot(rf1_perf_acc, "y.values")[[1]] )
+rf1_acc <- slot(rf1_perf_acc, "y.values")[[1]][ind]
+rf1_cutoff <- slot(rf1_perf_acc, "x.values")[[1]][ind]
+
+Model_performance <- bind_rows(Model_performance, 
+                               data.frame(Model= "Random Forest Baseline Model",
+                                          Best_Accuracy=rf1_acc,
+                                          #Cut_off=rf1_cutoff,
+                                          AUC=rf1_perf_auc@y.values[[1]],
+                                          Sensitivity=cm_rf1$byClass['Sensitivity'],
+                                          Specificity=cm_rf1$byClass['Specificity']
+                               ))
+```
+
+It can be seen that Random Forest has a much better baseline AUC performance.
+```{r Model_performance_rf1, echo=TRUE,eval=TRUE}
+Model_performance %>% knitr::kable()
+```
+
+
+### Baseline Model - XGBoost  
+
+We will now train our last baseline model with XGBoost. 
+
+```{r xgb1_baseline, eval=FALSE,echo=TRUE}
+params <- list(booster = "gbtree", objective = "binary:logistic",
+               nrounds = 100,
+               eta=0.3,
+               gamma=0,
+               max_depth=6,
+               min_child_weight=1,
+               subsample=1,
+               colsample_bytree=1)
+
+Mat1 <- data.matrix(X_train_first)
+
+dtrain <- xgb.DMatrix(Mat1, label = (as.numeric(y_train_first)-1))
+xgb1 <- xgb.train (params = params, 
+                   data = dtrain, 
+                   nrounds = 100, 
+                   print_every_n = 10, early_stop_round = 10, 
+                   maximize = F , eval_metric = "auc")
+```
+
+```{r xgb1_baseline_read, eval=TRUE,echo=FALSE}
+xgb1<-readRDS("xgb1.rds")
+```
+
+
+Obtaining the various performance metrics by using the previously split test data. 
+```{r xgb1_perf, eval=TRUE,echo=TRUE}
+Mat2<-data.matrix(X_test_first)
+
+dtest <- xgb.DMatrix(Mat2, label = y_test_first)
+xgb1_pred <- predict (xgb1,dtest)
+xgb1_pred_confusion <- ifelse (xgb1_pred > 0.5,1,0)
+#confusion matrix
+library(caret)
+xgb1_pred_confusion<-as.factor(xgb1_pred_confusion)
+cm_xgb1<- confusionMatrix (xgb1_pred_confusion, y_test_first, positive='1')
+
+#AUC and Accuracy
+xgb1_ROCRpred <- prediction(xgb1_pred,y_test_first)
+xgb1_perf <- performance(xgb1_ROCRpred,"tpr","fpr")
+xgb1_perf_auc <- performance(xgb1_ROCRpred, measure = "auc")
+xgb1_perf_acc <- performance(xgb1_ROCRpred, measure = "acc")
+
+# Get best accuracy and cutoff
+ind <- which.max( slot(xgb1_perf_acc, "y.values")[[1]] )
+xgb1_acc <- slot(xgb1_perf_acc, "y.values")[[1]][ind]
+xgb1_cutoff <- slot(xgb1_perf_acc, "x.values")[[1]][ind]
+
+Model_performance <- bind_rows(Model_performance, 
+                               data.frame(Model= "XGBoost Baseline Model",
+                                          Best_Accuracy=xgb1_acc,
+                                          #Cut_off=xgb1_cutoff,
+                                          AUC=xgb1_perf_auc@y.values[[1]],
+                                          Sensitivity=cm_xgb1$byClass['Sensitivity'],
+                                          Specificity=cm_xgb1$byClass['Specificity']
+                               ))
+```
+
+Comparing the performance of these 3 baseline models, we can see that Logistic Regression is not performing well for this kind of slightly imbalanced data set. Hence, for the subsequent study, we will focus on Random Forest and XGBoost. 
+
+```{r Model_performance_xgb1, echo=FALSE,eval=TRUE}
+Model_performance %>% knitr::kable()
+
+plot(glm1_perf,col='red',lty=1, main='ROC Logistic VS. XGBoost VS. Random Forest'); 
+plot(xgb1_perf, col='blue',lty=1,add=T); 
+plot(rf1_perf, col='green', lty=1, add=T);
+legend(0.6,0.6,c('Logistic Regression','XGBoost', 'RandomForest'),
+       col=c('red','blue','green'),lwd=3);
+abline(a=0, b= 1)
+
+```
+
+
+### Random Forest - Hyperparameter Tuning  
+
+We will now tune the hyperparameters of the Random Forest model to obtain the most optimal performance of the model. 
+```{r rf_tune1, eval=FALSE,echo=TRUE}
+#Create control function for training with 5 folds, search method is grid.
+control <- trainControl(method='cv', 
+                        number=5, 
+                        #repeats=3, 
+                        search='grid')
+#create tunegrid with 15 values from 7:20 for mtry to tunning model. Our train function will change number of entry variable at each split according to tunegrid. 
+tune_grid <- expand.grid(#ntree = c(500,800,1000),
+                         mtry = (7:20)
+                         ) 
+
+rf_tune1 <- train(X_train_first,y_train_first,
+                       method = 'rf',
+                       metric = 'Accuracy',
+                       tuneGrid = tune_grid)
+
+```
+
+
+```{r rf_tune1_read, eval=TRUE,echo=FALSE}
+rf_tune1<-readRDS("rf_tune1.rds")
+```
+
+```{r rf_tune1_perf, eval=TRUE,echo=FALSE,warning=FALSE}
+rf_tune1_prob <- predict(rf_tune1, X_test_first, type='prob')[,2]
+rf_tune1_pred_confusion <- ifelse (rf_tune1_prob > 0.5,1,0)
+
+#confusion matrix
+library(caret)
+rf_tune1_pred_confusion<-as.factor(rf_tune1_pred_confusion)
+cm_rf_tune1<- confusionMatrix (rf_tune1_pred_confusion, y_test_first)
+pred_0.5_rf_tune1 <- as.factor(as.numeric(rf_tune1_prob>0.5))
+cm_rf_tune1<-confusionMatrix(pred_0.5_rf_tune1, y_test_first, positive='1')
+
+
+#AUC and Accuracy
+rf_tune1_ROCRpred <- prediction(rf_tune1_prob,as.numeric(y_test_first)-1)
+rf_tune1_perf <- performance(rf_tune1_ROCRpred,"tpr","fpr")
+rf_tune1_perf_auc <- performance(rf_tune1_ROCRpred, measure = "auc")
+rf_tune1_perf_acc <- performance(rf_tune1_ROCRpred, measure = "acc")
+
+# Get best accuracy and cutoff
+ind <- which.max( slot(rf_tune1_perf_acc, "y.values")[[1]] )
+rf_tune1_acc <- slot(rf_tune1_perf_acc, "y.values")[[1]][ind]
+rf_tune1_cutoff <- slot(rf_tune1_perf_acc, "x.values")[[1]][ind]
+
+Model_performance <- bind_rows(Model_performance, 
+                               data.frame(Model= "Random Forest Tuned Model",
+                                          Best_Accuracy=rf_tune1_acc,
+                                          #Cut_off=rf_tune1_cutoff,
+                                          AUC=rf_tune1_perf_auc@y.values[[1]],
+                                          Sensitivity=cm_rf_tune1$byClass['Sensitivity'],
+                                          Specificity=cm_rf_tune1$byClass['Specificity']
+                               ))
+```
+
+
+It can be seen that the performance only improve very slightly after tuning the hyperparameters. 
+```{r Model_performance_rf_tune1, echo=FALSE,eval=TRUE}
+Model_performance %>% knitr::kable()
+```
+
+
+### XGBoost - Hyperparameter Tuning  
+
+We will now tune the hyperparameters of the XGBoost model to obtain the most optimal performance of the model. 
+```{r xgb_tune1,echo=TRUE,eval=FALSE}
+tune_grid <- expand.grid(nrounds = c(300,500,600),
+                         max_depth = c(3,6,8),
+                         eta = c(0.1,0.3),
+                         gamma = c(0,3),
+                         colsample_bytree = c(0.6,0.8,1),
+                         min_child_weight = c(1,3),
+                         subsample = c(0.6,0.8,1))
+
+ 
+ tune_grid <- expand.grid(nrounds = c(100),
+                          max_depth = c(6),
+                          eta = c(0.3),
+                          gamma = c(0),
+                          colsample_bytree = c(1),
+                          min_child_weight = c(1),
+                          subsample = c(1)) 
+
+trctrl <- trainControl(method = "cv", number = 5)
+```
+
+
+```{r xgb_tune1_read, eval=TRUE,echo=FALSE}
+xgb_tune1<-readRDS("xgb_tune1.rds")
+```
+
+
+
+```{r xgb_tune1_perf, eval=TRUE,echo=FALSE,warning=FALSE}
+Mat2 <- data.matrix(X_test_first)
+xgb_tune1_pred <- predict (xgb_tune1,Mat2,type='prob')[,2]
+xgb_tune1_pred_confusion <- ifelse (xgb_tune1_pred > 0.5,1,0)
+#confusion matrix
+library(caret)
+xgb_tune1_pred_confusion<-as.factor(xgb_tune1_pred_confusion)
+cm_xgb_tune1<- confusionMatrix (xgb_tune1_pred_confusion, y_test_first, positive='1')
+
+#AUC and Accuracy
+xgb_tune1_ROCRpred <- prediction(xgb_tune1_pred,y_test_first)
+xgb_tune1_perf <- performance(xgb_tune1_ROCRpred,"tpr","fpr")
+
+xgb_tune1_perf_auc <- performance(xgb_tune1_ROCRpred, measure = "auc")
+xgb_tune1_perf_acc <- performance(xgb_tune1_ROCRpred, measure = "acc")
+
+
+# Get best accuracy and cutoff
+ind <- which.max( slot(xgb_tune1_perf_acc, "y.values")[[1]] )
+xgb_tune1_acc <- slot(xgb_tune1_perf_acc, "y.values")[[1]][ind]
+xgb_tune1_cutoff <- slot(xgb_tune1_perf_acc, "x.values")[[1]][ind]
+
+Model_performance <- bind_rows(Model_performance, 
+                               data.frame(Model= "XGBoost Tuned Model",
+                                          Best_Accuracy=xgb_tune1_acc,
+                                          #Cut_off=xgb_tune1_cutoff,
+                                          AUC=xgb_tune1_perf_auc@y.values[[1]],
+                                          Sensitivity=cm_xgb_tune1$byClass['Sensitivity'],
+                                          Specificity=cm_xgb_tune1$byClass['Specificity']
+                               ))
+```
+
+
+We can see a good improvement of AUC from 0.77 to 0.79 after tuning the hyperparameter of XGBoost.
+```{r Model_performance_xgb_tune1, echo=FALSE,eval=TRUE}
+Model_performance %>% knitr::kable()
+```
+
+
+### Random Forest (Tuned) - Feature Selection 15
+
+Next, we will select the top 15 features base on the random forest tuned model and retrain it. This is to also test out the performance after removing the less important features which could cause noise to the model. 
+
+```{r rf_tune1_fselect15,eval=TRUE,echo=TRUE}
+importance_rf_tune1 <- varImp(rf_tune1, scale=FALSE)
+#select top 15 features
+features_selected<- rownames(importance_rf_tune1$importance)[1:15]
+X_train_fselect<-X_train_first%>%select(features_selected)
+X_test_fselect<-X_test_first%>%select(features_selected)
+```
+
+```{r rf_tune1_fselect15_Train,eval=FALSE,echo=TRUE}
+control <- trainControl(method='cv',
+                        number=5,
+                        #repeats=3,
+                        search='grid')
+#create tunegrid with values from 7:12 for mtry to tunning model. Our train function will change number of entry variable at each split according to tunegrid.
+tune_grid <- expand.grid(
+  mtry = (7:12)
+)
+
+rf_tune1_fselect <- train(X_train_fselect,y_train_first,
+                  method = 'rf',
+                  metric = 'Accuracy',
+                  tuneGrid = tune_grid)
+```
+
+
+```{r rf_tune1_fselect15_read,,eval=TRUE,echo=FALSE}
+rf_tune1_fselect<-readRDS("rf_tune1_fselect_15.rds")
+```
+
+```{r rf_tune1_fselect15_perf, eval=TRUE,echo=FALSE}
+rf_tune1_fselect_prob <- predict(rf_tune1_fselect, X_test_first, type='prob')[,2]
+rf_tune1_fselect_pred_confusion <- ifelse (rf_tune1_fselect_prob > 0.5,1,0)
+
+#confusion matrix
+library(caret)
+rf_tune1_fselect_pred_confusion<-as.factor(rf_tune1_fselect_pred_confusion)
+cm_rf_tune1_fselect<- confusionMatrix (rf_tune1_fselect_pred_confusion, y_test_first)
+pred_0.5_rf_tune1_fselect <- as.factor(as.numeric(rf_tune1_fselect_prob>0.5))
+cm_rf_tune1_fselect<-confusionMatrix(pred_0.5_rf_tune1_fselect, y_test_first, positive='1')
+
+
+#AUC and Accuracy
+rf_tune1_fselect_ROCRpred <- prediction(rf_tune1_fselect_prob,as.numeric(y_test_first)-1)
+rf_tune1_fselect_perf <- performance(rf_tune1_fselect_ROCRpred,"tpr","fpr")
+rf_tune1_fselect_perf_auc <- performance(rf_tune1_fselect_ROCRpred, measure = "auc")
+rf_tune1_fselect_perf_acc <- performance(rf_tune1_fselect_ROCRpred, measure = "acc")
+
+# Get best accuracy and cutoff
+ind <- which.max( slot(rf_tune1_fselect_perf_acc, "y.values")[[1]] )
+rf_tune1_fselect_acc <- slot(rf_tune1_fselect_perf_acc, "y.values")[[1]][ind]
+rf_tune1_fselect_cutoff <- slot(rf_tune1_fselect_perf_acc, "x.values")[[1]][ind]
+
+Model_performance <- bind_rows(Model_performance, 
+                               data.frame(Model= "Random Forest Tune_fselect15",
+                                          Best_Accuracy=rf_tune1_fselect_acc,
+                                          #Cut_off=rf_tune1_fselect_cutoff,
+                                          AUC=rf_tune1_fselect_perf_auc@y.values[[1]],
+                                          Sensitivity=cm_rf_tune1_fselect$byClass['Sensitivity'],
+                                          Specificity=cm_rf_tune1_fselect$byClass['Specificity']
+                               ))
+
+```
+
+The performance is slightly worse off than the original tuned model. 
+```{r Model_performance_rf_tune1_fselect15, echo=FALSE,eval=TRUE}
+Model_performance %>% knitr::kable()
+```
+
+
+### XGBoost (Tuned) - Feature Selection 15
+
+Lastly, we will select the top 15 features base on the XGB tuned model and retrain it. This is to also test out the performance after removing the less important features which could cause noise to the model. 
+
+```{r xgb_tune1_fselect,eval=TRUE,echo=TRUE}
+importance_xgb_tune1 <- varImp(xgb_tune1, scale=FALSE)
+features_selected_xgb_tune1<- rownames(importance_xgb_tune1$importance)[1:15]
+X_train_fselect<-X_train_first%>%select(features_selected_xgb_tune1)
+X_test_fselect<-X_test_first%>%select(features_selected_xgb_tune1)
+```
+
+```{r xgb_tune1_fselect15_train,,eval=FALSE,echo=TRUE}
+tune_grid <- expand.grid(nrounds = c(300,500,600),
+                         max_depth = c(3,6,8),
+                         eta = c(0.1,0.3),
+                         gamma = 3,
+                         colsample_bytree = c(0.8,1),
+                         min_child_weight = c(1,3),
+                         subsample = 1)
+
+
+
+trctrl <- trainControl(method = "cv", number = 5)
+
+Mat_X_train_fselect <- data.matrix(X_train_fselect)
+xgb_tune1_fselect <- caret::train(Mat_X_train_fselect,y_train_first, method = "xgbTree",
+                          metric="Accuracy",
+                          trControl=trctrl,
+                          tuneGrid = tune_grid)
+```
+
+
+```{r xgb_tune1_fselect15_read,,eval=TRUE,echo=FALSE}
+xgb_tune1_fselect<-readRDS("xgb_tune1_fselect_15_2.rds")
+```
+
+
+```{r xgb_tune1_fselect15_perf,,eval=TRUE,echo=FALSE}
+Mat2 <- data.matrix(X_test_fselect)
+xgb_tune1_fselect15_pred <- predict (xgb_tune1_fselect,Mat2,type='prob')[,2]
+xgb_tune1_fselect15_pred_confusion <- ifelse (xgb_tune1_fselect15_pred > 0.5,1,0)
+#confusion matrix
+library(caret)
+xgb_tune1_fselect15_pred_confusion<-as.factor(xgb_tune1_fselect15_pred_confusion)
+cm_xgb_tune1_fselect15<- confusionMatrix (xgb_tune1_fselect15_pred_confusion, y_test_first, positive='1')
+
+#AUC and Accuracy
+xgb_tune1_fselect15_ROCRpred <- prediction(xgb_tune1_fselect15_pred,y_test_first)
+xgb_tune1_fselect15_perf <- performance(xgb_tune1_fselect15_ROCRpred,"tpr","fpr")
+
+xgb_tune1_fselect15_perf_auc <- performance(xgb_tune1_fselect15_ROCRpred, measure = "auc")
+xgb_tune1_fselect15_perf_acc <- performance(xgb_tune1_fselect15_ROCRpred, measure = "acc")
+
+# Get best accuracy and cutoff
+ind <- which.max( slot(xgb_tune1_fselect15_perf_acc, "y.values")[[1]] )
+xgb_tune1_fselect15_acc <- slot(xgb_tune1_fselect15_perf_acc, "y.values")[[1]][ind]
+xgb_tune1_fselect15_cutoff <- slot(xgb_tune1_fselect15_perf_acc, "x.values")[[1]][ind]
+
+Model_performance <- bind_rows(Model_performance, 
+                               data.frame(Model= "XGBoost Tuned Model_fselect15",
+                                          Best_Accuracy=xgb_tune1_fselect15_acc,
+                                          #Cut_off=xgb_tune1_fselect15_cutoff,
+                                          AUC=xgb_tune1_fselect15_perf_auc@y.values[[1]],
+                                          Sensitivity=cm_xgb_tune1_fselect15$byClass['Sensitivity'],
+                                          Specificity=cm_xgb_tune1_fselect15$byClass['Specificity']
+                               ))
+```
+
+The performance is very much comparable with the original tuned model. 
+```{r Model_performance_xgb_tune1_fselect15, echo=FALSE,eval=TRUE}
+Model_performance %>% knitr::kable()
+```
+
+## Model Selection  
+
+Judging from the performances of the Models, both XGBoost and Random Forest have a much better performance than logistic regression. Among which, XGBoost slightly outperforms Random Forest and have a higher AUC. In this case, feature selection does not help in improving the performance, i.e. almost comparable for XGBoost and even worse off performance for Random Forest.
+
+
+```{r Model_performance_model_selection, echo=FALSE,eval=TRUE, fig.height=3, fig.width=6}
+Model_performance %>% select(Model,AUC)%>%arrange(-(AUC))%>%ggplot(aes(x=AUC,y=reorder(Model, AUC)))+
+  geom_col(fill = "turquoise")+
+  geom_text(aes(label=round(AUC,4),hjust=0, vjust=0))+
+  coord_cartesian(xlim = c(0.3, 0.9))+
+  labs(title = "Model Performance", y ="Model") 
+
+```
+
+A closer look at the AUC plot comparison for all the models built,
+
+```{r Model_performance_model_selection_aucPlot,echo=FALSE,eval=TRUE}
+plot(glm1_perf,col='red',lty=1, main='ROC Logistic VS. XGBoost VS. Random Forest'); 
+plot(xgb1_perf, col='blue',lty=1,add=T); 
+plot(rf1_perf, col='green', lty=1, add=T);
+plot(xgb_tune1_perf, col='orange',lty=1,add=T); 
+plot(rf_tune1_perf, col='cyan', lty=1, add=T);
+plot(xgb_tune1_fselect15_perf, col='magenta',lty=1,add=T); 
+plot(rf_tune1_fselect_perf, col='gray', lty=1, add=T);
+legend(0.6,0.6,c('logistic regression','xgb', 'RF',
+                 'xgb_tuned', 'RF_tuned',"xgb_tuned_fselect15","rf_tuned_fselect15"),
+       col=c('red','blue','green','orange','cyan','magenta','gray'),lwd=3);
+abline(a=0, b= 1)
+```
+
+
+# Conclusion  
+
+We have built a series of useful machine learning models to predict the probability of default of the credit card clients in Taiwan.
+It can be seen that after doing various experiments with algorithms such as Logistic Regression, Random Forest and XGBoost, XGBoost comes up to be the best performer, closely followed by Random Forest. 
+The final model we select is the XGboost tuned model, as it has the best AUC (`r round(max(Model_performance%>%select(AUC)),4)`) which is acceptable as a useful model as the AUC is close to 0.8. Last but not least, for future improvement, we can consider using techniques such as under-sampling and over-sampling to tackle the slightly imbalance data set or testing other machine learning models which could also improve the results further.
+
+\pagebreak
+
+# Acknowledgement
+
+Lichman, M. (2013). UCI Machine Learning Repository [http://archive.ics.uci.edu/ml]. Irvine, CA: University of California, School of Information and Computer Science.
+
+Original Dateset from UCI Machine Learning Repository: [UCI Archive](https://archive.ics.uci.edu/ml/datasets/default+of+credit+card+clients)
